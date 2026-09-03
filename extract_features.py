@@ -72,8 +72,8 @@ def parse_args():
     parser.add_argument(
         "--max_frames",
         type=int,
-        default=MAX_FRAMES_PER_VIDEO,
-        help="Maximum extracted frames per video (default: 5000)."
+        default=None,
+        help="Optional max sampled frames per video (default: None = Full Video)."
     )
     parser.add_argument(
         "--seq_length",
@@ -141,7 +141,7 @@ def main():
     print(f"Dataset Path : {args.dataset_path}")
     print(f"Output File  : {args.output_path}")
     print(f"Frame Skip   : {args.frame_skip} (Sample every {args.frame_skip}th frame)")
-    print(f"Max Frames   : {args.max_frames} per video")
+    print(f"Max Frames   : {args.max_frames if args.max_frames else 'Full Video (Unlimited)'}")
     print(f"Seq Length   : {args.seq_length} timesteps")
     print(f"Step Size    : {args.step_size} stride")
     print(f"Workers      : {args.num_workers} parallel processes")

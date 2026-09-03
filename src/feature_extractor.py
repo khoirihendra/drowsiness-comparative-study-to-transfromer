@@ -261,7 +261,7 @@ def extract_features_from_video(
     video_path: Union[str, Path],
     pipeline: FacialLandmarkerPipeline,
     frame_skip: int = 5,
-    max_frames: int = 5000,
+    max_frames: Optional[int] = None,
     resize_dim: Tuple[int, int] = (640, 480),
     default_padding: Tuple[float, float, float, float, float] = (0.3, 0.0, 0.0, 0.0, 0.0)
 ) -> np.ndarray:
@@ -273,7 +273,7 @@ def extract_features_from_video(
         video_path: Path to video file (.mp4, .mov, .avi, etc.)
         pipeline: Initialized FacialLandmarkerPipeline instance.
         frame_skip: Sample 1 frame every N frames.
-        max_frames: Maximum sampled frames to extract per video.
+        max_frames: Maximum sampled frames (None or <=0 extracts full video).
         resize_dim: (width, height) to resize frames for inference.
         default_padding: 5-tuple default features when face is temporarily not detected.
 
@@ -288,8 +288,11 @@ def extract_features_from_video(
     features = []
     frame_count = 0
     extracted_count = 0
+    has_limit = (max_frames is not None and max_frames > 0)
 
-    while cap.isOpened() and extracted_count < max_frames:
+    while cap.isOpened():
+        if has_limit and extracted_count >= max_frames:
+            break
         if frame_count % frame_skip == 0:
             ret, frame = cap.read()
             if not ret:
