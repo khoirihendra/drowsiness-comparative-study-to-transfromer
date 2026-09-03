@@ -162,10 +162,30 @@ class FacialLandmarkerPipeline:
         self.mode = None
         self.detector = None
 
-        # 1. Try Tasks API if model asset exists
-        if model_asset_path and os.path.exists(model_asset_path):
+        # 1. Check or auto-download Tasks API model asset if path is provided or default
+        target_model_path = model_asset_path
+        if not target_model_path or not os.path.exists(target_model_path):
+            default_dir = Path(__file__).resolve().parent.parent / "models"
+            default_dir.mkdir(parents=True, exist_ok=True)
+            candidate_path = default_dir / "face_landmarker.task"
+            
+            if not candidate_path.exists():
+                try:
+                    import urllib.request
+                    url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+                    print(f"Downloading MediaPipe Face Landmarker model from {url}...")
+                    urllib.request.urlretrieve(url, str(candidate_path))
+                    print(f"✅ Downloaded face_landmarker.task to {candidate_path}")
+                except Exception as dl_err:
+                    print(f"Note: Could not auto-download model ({dl_err}).")
+
+            if candidate_path.exists():
+                target_model_path = str(candidate_path)
+
+        # 2. Try Tasks API if model asset exists
+        if target_model_path and os.path.exists(target_model_path):
             try:
-                base_options = python.BaseOptions(model_asset_path=model_asset_path)
+                base_options = python.BaseOptions(model_asset_path=target_model_path)
                 options = vision.FaceLandmarkerOptions(
                     base_options=base_options,
                     num_faces=1,
@@ -181,7 +201,7 @@ class FacialLandmarkerPipeline:
                 print(f"Warning: Failed to load MediaPipe Tasks API ({e}). Falling back to FaceMesh solutions...")
                 self.detector = None
 
-        # 2. Fallback to MediaPipe Solutions FaceMesh
+        # 3. Fallback to MediaPipe Solutions FaceMesh
         if self.detector is None:
             if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
                 self.detector = mp.solutions.face_mesh.FaceMesh(
@@ -240,6 +260,7 @@ def extract_features_from_video(
 ) -> np.ndarray:
     """
     Extract frame-by-frame 5 features (EAR, MAR, Pitch, Yaw, Roll) from a video file.
+    Uses cap.grab() for fast non-blocking frame skipping.
 
     Args:
         video_path: Path to video file (.mp4, .mov, .avi, etc.)
@@ -261,12 +282,12 @@ def extract_features_from_video(
     frame_count = 0
     extracted_count = 0
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret or extracted_count >= max_frames:
-            break
-
+    while cap.isOpened() and extracted_count < max_frames:
         if frame_count % frame_skip == 0:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
             if resize_dim:
                 frame = cv2.resize(frame, resize_dim)
 
@@ -280,8 +301,14 @@ def extract_features_from_video(
                 features.append(list(default_padding))
 
             extracted_count += 1
+        else:
+            # Fast frame skipping without decoding pixel buffer
+            ret = cap.grab()
+            if not ret:
+                break
 
         frame_count += 1
 
     cap.release()
     return np.array(features, dtype=np.float32)
+

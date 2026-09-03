@@ -133,7 +133,8 @@ def main():
     skipped_videos = 0
 
     print("Starting video processing & feature extraction:")
-    for video_path in tqdm(video_files, desc="Extracting features"):
+    pbar = tqdm(video_files, desc="Extracting features")
+    for video_path in pbar:
         meta = parse_video_metadata(video_path)
         if meta is None:
             skipped_videos += 1
@@ -142,6 +143,7 @@ def main():
         label = meta["label"]
         subject_id = meta["subject_id"]
         fold_id = meta["fold_id"]
+        pbar.set_postfix({"vid": Path(video_path).name, "sub": subject_id, "processed": processed_videos})
 
         # Extract frame-by-frame 5 features (EAR, MAR, Pitch, Yaw, Roll)
         video_feats = extract_features_from_video(
