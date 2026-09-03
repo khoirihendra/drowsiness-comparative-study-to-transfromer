@@ -27,6 +27,7 @@ Usage:
 
 import os
 import sys
+import time
 import argparse
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -190,6 +191,7 @@ def train_single_fold_nn(
     print(f"Train samples: {len(X_train)} | Val samples: {len(X_val)} | Test samples: {len(X_test)}")
     print(f"Input Shape  : {input_shape}\n")
 
+    start_train_time = time.perf_counter()
     history = model.fit(
         X_train, y_train,
         epochs=epochs,
@@ -199,14 +201,25 @@ def train_single_fold_nn(
         shuffle=True,
         verbose=1
     )
+    training_time_sec = time.perf_counter() - start_train_time
 
-    # Evaluate on held-out test fold
+    # Evaluate on held-out test fold with precise inference timing
+    start_test_time = time.perf_counter()
     y_pred_probs = model.predict(X_test, verbose=0)
+    test_duration_sec = time.perf_counter() - start_test_time
+    latency_ms = (test_duration_sec / len(X_test)) * 1000.0 if len(X_test) > 0 else 0.0
+    throughput_fps = len(X_test) / test_duration_sec if test_duration_sec > 0 else 0.0
+
     metrics = compute_metrics(y_test_raw, y_pred_probs, class_names=LABEL_NAMES)
     metrics["test_fold"] = test_fold
     metrics["model"] = model_name
     metrics["feature_subset"] = feature_subset
     metrics["checkpoint_path"] = str(checkpoint_path)
+    metrics["training_time_sec"] = float(training_time_sec)
+    metrics["test_samples"] = int(len(X_test))
+    metrics["test_inference_time_sec"] = float(test_duration_sec)
+    metrics["inference_latency_ms_per_sample"] = float(latency_ms)
+    metrics["inference_throughput_fps"] = float(throughput_fps)
 
     # Save curve and confusion matrix figures
     curve_fig_path = FIGURES_DIR / f"{model_name}_{feature_subset}_fold{test_fold}_learning_curves.png"
@@ -245,6 +258,7 @@ def train_single_fold_xgboost(
     print(f"\n--- Training XGBOOST | Feature: {feature_subset} | Test Fold: {test_fold} ---")
     print(f"Train samples: {len(X_train)} | Val samples: {len(X_val)} | Test samples: {len(X_test)}")
 
+    start_train_time = time.perf_counter()
     model = train_xgboost_model(
         X_train=X_train,
         y_train=y_train,
@@ -252,16 +266,28 @@ def train_single_fold_xgboost(
         y_val=y_val,
         verbose=20
     )
+    training_time_sec = time.perf_counter() - start_train_time
 
     checkpoint_path = CHECKPOINTS_DIR / f"xgboost_{feature_subset}_fold{test_fold}_best.json"
     model.save_model(str(checkpoint_path))
 
+    # Evaluate with precise inference timing
+    start_test_time = time.perf_counter()
     pred_probs, pred_classes = evaluate_xgboost_model(model, X_test)
+    test_duration_sec = time.perf_counter() - start_test_time
+    latency_ms = (test_duration_sec / len(X_test)) * 1000.0 if len(X_test) > 0 else 0.0
+    throughput_fps = len(X_test) / test_duration_sec if test_duration_sec > 0 else 0.0
+
     metrics = compute_metrics(y_test_raw, pred_probs, class_names=LABEL_NAMES)
     metrics["test_fold"] = test_fold
     metrics["model"] = "xgboost"
     metrics["feature_subset"] = feature_subset
     metrics["checkpoint_path"] = str(checkpoint_path)
+    metrics["training_time_sec"] = float(training_time_sec)
+    metrics["test_samples"] = int(len(X_test))
+    metrics["test_inference_time_sec"] = float(test_duration_sec)
+    metrics["inference_latency_ms_per_sample"] = float(latency_ms)
+    metrics["inference_throughput_fps"] = float(throughput_fps)
 
     cm_fig_path = FIGURES_DIR / f"xgboost_{feature_subset}_fold{test_fold}_confusion_matrix.png"
     plot_confusion_matrix(
@@ -329,6 +355,9 @@ def main():
     f1s = [r["f1_macro"] for r in fold_results]
     precs = [r["precision_macro"] for r in fold_results]
     recs = [r["recall_macro"] for r in fold_results]
+    train_times = [r.get("training_time_sec", 0.0) for r in fold_results]
+    latencies = [r.get("inference_latency_ms_per_sample", 0.0) for r in fold_results]
+    throughputs = [r.get("inference_throughput_fps", 0.0) for r in fold_results]
 
     summary = {
         "model": args.model,
@@ -342,6 +371,13 @@ def main():
         "std_precision_macro": float(np.std(precs)),
         "mean_recall_macro": float(np.mean(recs)),
         "std_recall_macro": float(np.std(recs)),
+        "total_training_time_sec": float(np.sum(train_times)),
+        "mean_training_time_sec": float(np.mean(train_times)),
+        "std_training_time_sec": float(np.std(train_times)),
+        "mean_inference_latency_ms": float(np.mean(latencies)),
+        "std_inference_latency_ms": float(np.std(latencies)),
+        "mean_inference_throughput_fps": float(np.mean(throughputs)),
+        "std_inference_throughput_fps": float(np.std(throughputs)),
         "folds": fold_results
     }
 
@@ -353,12 +389,18 @@ def main():
     print(f"5-FOLD CROSS-VALIDATION SUMMARY: {args.model.upper()} ({args.features})")
     print("=" * 70)
     for r in fold_results:
-        print(f"  Fold {r['test_fold']}: Accuracy = {r['accuracy']*100:6.2f}% | F1-Score = {r['f1_macro']*100:6.2f}%")
+        t_time = r.get("training_time_sec", 0.0)
+        lat = r.get("inference_latency_ms_per_sample", 0.0)
+        fps = r.get("inference_throughput_fps", 0.0)
+        print(f"  Fold {r['test_fold']}: Acc = {r['accuracy']*100:5.2f}% | F1 = {r['f1_macro']*100:5.2f}% | Train Time = {t_time:6.1f}s | Latency = {lat:6.3f} ms/seq")
     print("-" * 70)
-    print(f"  Mean Accuracy  : {summary['mean_accuracy']*100:.2f}% ± {summary['std_accuracy']*100:.2f}%")
-    print(f"  Mean Macro F1  : {summary['mean_f1_macro']*100:.2f}% ± {summary['std_f1_macro']*100:.2f}%")
-    print(f"  Mean Precision : {summary['mean_precision_macro']*100:.2f}% ± {summary['std_precision_macro']*100:.2f}%")
-    print(f"  Mean Recall    : {summary['mean_recall_macro']*100:.2f}% ± {summary['std_recall_macro']*100:.2f}%")
+    print(f"  Mean Accuracy   : {summary['mean_accuracy']*100:.2f}% ± {summary['std_accuracy']*100:.2f}%")
+    print(f"  Mean Macro F1   : {summary['mean_f1_macro']*100:.2f}% ± {summary['std_f1_macro']*100:.2f}%")
+    print(f"  Mean Precision  : {summary['mean_precision_macro']*100:.2f}% ± {summary['std_precision_macro']*100:.2f}%")
+    print(f"  Mean Recall     : {summary['mean_recall_macro']*100:.2f}% ± {summary['std_recall_macro']*100:.2f}%")
+    print(f"  Total Train Time: {summary['total_training_time_sec']:.2f} s ({summary['total_training_time_sec']/60:.1f} mins)")
+    print(f"  Mean Latency    : {summary['mean_inference_latency_ms']:.3f} ± {summary['std_inference_latency_ms']:.3f} ms / sequence")
+    print(f"  Mean Throughput : {summary['mean_inference_throughput_fps']:.1f} ± {summary['std_inference_throughput_fps']:.1f} sequences / sec")
     print(f"\nSaved CV summary report to: {summary_path}")
     print("=" * 70)
 

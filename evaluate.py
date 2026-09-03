@@ -40,6 +40,10 @@ def collect_metrics_summaries() -> pd.DataFrame:
                 "std_precision_macro": data.get("std_precision_macro", 0.0) * 100,
                 "mean_recall_macro": data.get("mean_recall_macro", 0.0) * 100,
                 "std_recall_macro": data.get("std_recall_macro", 0.0) * 100,
+                "total_train_time_sec": data.get("total_training_time_sec", 0.0),
+                "mean_latency_ms": data.get("mean_inference_latency_ms", 0.0),
+                "std_latency_ms": data.get("std_inference_latency_ms", 0.0),
+                "mean_throughput_fps": data.get("mean_inference_throughput_fps", 0.0),
                 "num_folds": data.get("num_folds_evaluated", 0)
             })
         except Exception as e:
@@ -86,6 +90,21 @@ def generate_comparison_plots(df: pd.DataFrame) -> None:
     )
     print(f"✅ F1-Score comparison figure saved to: {chart_path_f1}")
 
+    # Pivot table for Inference Latency (ms)
+    if "mean_latency_ms" in df.columns and (df["mean_latency_ms"] > 0).any():
+        pivot_lat = df.pivot(index="model", columns="feature_subset", values="mean_latency_ms")
+        results_lat = pivot_lat.to_dict(orient="index")
+
+        chart_path_lat = FIGURES_DIR / "model_inference_latency_comparison.png"
+        plot_comparison_bar_chart(
+            results=results_lat,
+            metric_key="latency",
+            metric_display_name="Inference Latency per Sequence (ms)",
+            title="Computational Efficiency: Inference Latency Comparison",
+            save_path=chart_path_lat
+        )
+        print(f"✅ Inference Latency comparison figure saved to: {chart_path_lat}")
+
 
 def main():
     print("=" * 70)
@@ -101,19 +120,21 @@ def main():
     print("\n--- 5-Fold Cross-Validation Summary Table ---")
     print(df.to_string(index=False))
 
-    # Format paper-ready markdown table
+    # Format paper-ready markdown table (Standard Benchmark Format)
     md_lines = [
-        "| Model | Feature Set | Accuracy (%) | Macro F1 (%) | Precision (%) | Recall (%) | Folds |",
-        "|:---|:---|:---:|:---:|:---:|:---:|:---:|"
+        "| Model | Feature Set | Accuracy (%) | Precision (%) | Recall (%) | F1-Score (%) | Train Time (s) | Latency (ms/seq) |",
+        "|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|"
     ]
     for _, row in df.iterrows():
         feat_name = FEATURE_SUBSETS.get(row["feature_subset"], {}).get("name", row["feature_subset"])
         acc_str = f"{row['mean_accuracy']:.2f} ± {row['std_accuracy']:.2f}"
-        f1_str = f"{row['mean_f1_macro']:.2f} ± {row['std_f1_macro']:.2f}"
         prec_str = f"{row['mean_precision_macro']:.2f} ± {row['std_precision_macro']:.2f}"
         rec_str = f"{row['mean_recall_macro']:.2f} ± {row['std_recall_macro']:.2f}"
+        f1_str = f"{row['mean_f1_macro']:.2f} ± {row['std_f1_macro']:.2f}"
+        time_str = f"{row.get('total_train_time_sec', 0.0):.2f}"
+        lat_str = f"{row.get('mean_latency_ms', 0.0):.3f}"
         md_lines.append(
-            f"| **{row['model']}** | {feat_name} | {acc_str} | {f1_str} | {prec_str} | {rec_str} | {int(row['num_folds'])} |"
+            f"| **{row['model']}** | {feat_name} | {acc_str} | {prec_str} | {rec_str} | {f1_str} | {time_str} | {lat_str} |"
         )
 
     md_table = "\n".join(md_lines)
