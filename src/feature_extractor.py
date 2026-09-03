@@ -151,11 +151,11 @@ def extract_facial_features_from_landmarks(
 
 class FacialLandmarkerPipeline:
     """
-    Unified Landmarker Pipeline supporting both MediaPipe Tasks API
+    Unified Landmarker Pipeline supporting both MediaPipe Tasks API (GPU/CPU)
     and MediaPipe Solutions FaceMesh fallback.
     """
 
-    def __init__(self, model_asset_path: Optional[str] = None):
+    def __init__(self, model_asset_path: Optional[str] = None, use_gpu: bool = False):
         if not MEDIAPIPE_AVAILABLE:
             raise ImportError("MediaPipe is not installed. Please install mediapipe: pip install mediapipe")
 
@@ -182,24 +182,31 @@ class FacialLandmarkerPipeline:
             if candidate_path.exists():
                 target_model_path = str(candidate_path)
 
-        # 2. Try Tasks API if model asset exists
+        # 2. Try Tasks API (Attempt GPU delegate if requested, fallback to CPU)
         if target_model_path and os.path.exists(target_model_path):
-            try:
-                base_options = python.BaseOptions(model_asset_path=target_model_path)
-                options = vision.FaceLandmarkerOptions(
-                    base_options=base_options,
-                    num_faces=1,
-                    min_face_detection_confidence=0.5,
-                    min_face_presence_confidence=0.5,
-                    min_tracking_confidence=0.5,
-                    output_face_blendshapes=False,
-                    running_mode=vision.RunningMode.IMAGE
-                )
-                self.detector = vision.FaceLandmarker.create_from_options(options)
-                self.mode = "tasks_api"
-            except Exception as e:
-                print(f"Warning: Failed to load MediaPipe Tasks API ({e}). Falling back to FaceMesh solutions...")
-                self.detector = None
+            delegates_to_try = [python.BaseOptions.Delegate.GPU, python.BaseOptions.Delegate.CPU] if use_gpu else [python.BaseOptions.Delegate.CPU]
+            
+            for delegate in delegates_to_try:
+                try:
+                    base_options = python.BaseOptions(model_asset_path=target_model_path, delegate=delegate)
+                    options = vision.FaceLandmarkerOptions(
+                        base_options=base_options,
+                        num_faces=1,
+                        min_face_detection_confidence=0.5,
+                        min_face_presence_confidence=0.5,
+                        min_tracking_confidence=0.5,
+                        output_face_blendshapes=False,
+                        running_mode=vision.RunningMode.IMAGE
+                    )
+                    self.detector = vision.FaceLandmarker.create_from_options(options)
+                    self.mode = f"tasks_api ({'GPU' if delegate == python.BaseOptions.Delegate.GPU else 'CPU'})"
+                    break
+                except Exception as e:
+                    if delegate == python.BaseOptions.Delegate.GPU:
+                        print(f"Note: GPU delegate not available ({e}), falling back to CPU...")
+                    else:
+                        print(f"Warning: Failed to load MediaPipe Tasks API ({e}). Falling back to FaceMesh solutions...")
+                    self.detector = None
 
         # 3. Fallback to MediaPipe Solutions FaceMesh
         if self.detector is None:

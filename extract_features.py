@@ -87,7 +87,48 @@ def parse_args():
         default=STEP_SIZE,
         help="Sliding window step stride (default: 1)."
     )
+    parser.add_argument(
+        "--use_gpu",
+        action="store_true",
+        help="Attempt GPU delegate for MediaPipe inference."
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of parallel worker processes for video extraction (default: 4)."
+    )
     return parser.parse_args()
+
+
+def _process_video_worker(task):
+    video_path, model_path, use_gpu, frame_skip, max_frames, seq_length, step_size = task
+    meta = parse_video_metadata(video_path)
+    if meta is None:
+        return None
+
+    pipeline = FacialLandmarkerPipeline(model_asset_path=model_path, use_gpu=use_gpu)
+    try:
+        video_feats = extract_features_from_video(
+            video_path=video_path,
+            pipeline=pipeline,
+            frame_skip=frame_skip,
+            max_frames=max_frames
+        )
+    finally:
+        pipeline.close()
+
+    if len(video_feats) < seq_length:
+        return None
+
+    return create_sliding_windows_for_video(
+        video_features=video_feats,
+        label=meta["label"],
+        subject_id=meta["subject_id"],
+        fold_id=meta["fold_id"],
+        seq_length=seq_length,
+        step_size=step_size
+    )
 
 
 def main():
@@ -103,6 +144,8 @@ def main():
     print(f"Max Frames   : {args.max_frames} per video")
     print(f"Seq Length   : {args.seq_length} timesteps")
     print(f"Step Size    : {args.step_size} stride")
+    print(f"Workers      : {args.num_workers} parallel processes")
+    print(f"GPU Delegate : {args.use_gpu}")
     print("=" * 70)
 
     # 1. Discover all videos
@@ -114,65 +157,79 @@ def main():
 
     print(f"Found {len(video_files)} video files in dataset.\n")
 
-    # 2. Initialize MediaPipe Landmarker
-    print("Initializing MediaPipe Face Landmarker...")
-    try:
-        pipeline = FacialLandmarkerPipeline(model_asset_path=args.model_path)
-        print(f"✅ Landmarker initialized successfully (Mode: {pipeline.mode})!\n")
-    except Exception as e:
-        print(f"❌ Error initializing landmarker: {e}")
-        sys.exit(1)
-
-    # 3. Process each video individually (Zero Cross-Video Boundary Leakage)
-    all_X_windows = []
-    all_y_windows = []
-    all_sub_windows = []
-    all_fold_windows = []
-
+    # 2. Process videos in parallel or serial
+    all_X_windows, all_y_windows, all_sub_windows, all_fold_windows = [], [], [], []
     processed_videos = 0
     skipped_videos = 0
 
-    print("Starting video processing & feature extraction:")
-    pbar = tqdm(video_files, desc="Extracting features")
-    for video_path in pbar:
-        meta = parse_video_metadata(video_path)
-        if meta is None:
-            skipped_videos += 1
-            continue
+    tasks = [
+        (v, args.model_path, args.use_gpu, args.frame_skip, args.max_frames, args.seq_length, args.step_size)
+        for v in video_files
+    ]
 
-        label = meta["label"]
-        subject_id = meta["subject_id"]
-        fold_id = meta["fold_id"]
-        pbar.set_postfix({"vid": Path(video_path).name, "sub": subject_id, "processed": processed_videos})
+    print("Starting parallel video processing & feature extraction:")
+    if args.num_workers > 1:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+            future_to_video = {executor.submit(_process_video_worker, task): task[0] for task in tasks}
+            pbar = tqdm(as_completed(future_to_video), total=len(tasks), desc="Extracting features")
+            for future in pbar:
+                vid_path = future_to_video[future]
+                try:
+                    result = future.result()
+                    if result is not None:
+                        X_win, y_win, sub_win, fold_win = result
+                        all_X_windows.append(X_win)
+                        all_y_windows.append(y_win)
+                        all_sub_windows.append(sub_win)
+                        all_fold_windows.append(fold_win)
+                        processed_videos += 1
+                        pbar.set_postfix({"last_vid": Path(vid_path).name, "processed": processed_videos})
+                    else:
+                        skipped_videos += 1
+                except Exception as exc:
+                    print(f"\nWarning: Exception on video {vid_path}: {exc}")
+                    skipped_videos += 1
+    else:
+        # Serial execution
+        pipeline = FacialLandmarkerPipeline(model_asset_path=args.model_path, use_gpu=args.use_gpu)
+        pbar = tqdm(video_files, desc="Extracting features")
+        for video_path in pbar:
+            meta = parse_video_metadata(video_path)
+            if meta is None:
+                skipped_videos += 1
+                continue
 
-        # Extract frame-by-frame 5 features (EAR, MAR, Pitch, Yaw, Roll)
-        video_feats = extract_features_from_video(
-            video_path=video_path,
-            pipeline=pipeline,
-            frame_skip=args.frame_skip,
-            max_frames=args.max_frames
-        )
+            label = meta["label"]
+            subject_id = meta["subject_id"]
+            fold_id = meta["fold_id"]
+            pbar.set_postfix({"vid": Path(video_path).name, "sub": subject_id, "processed": processed_videos})
 
-        if len(video_feats) < args.seq_length:
-            continue
+            video_feats = extract_features_from_video(
+                video_path=video_path,
+                pipeline=pipeline,
+                frame_skip=args.frame_skip,
+                max_frames=args.max_frames
+            )
 
-        # Form temporal sliding windows strictly for this single video
-        X_win, y_win, sub_win, fold_win = create_sliding_windows_for_video(
-            video_features=video_feats,
-            label=label,
-            subject_id=subject_id,
-            fold_id=fold_id,
-            seq_length=args.seq_length,
-            step_size=args.step_size
-        )
+            if len(video_feats) < args.seq_length:
+                continue
 
-        all_X_windows.append(X_win)
-        all_y_windows.append(y_win)
-        all_sub_windows.append(sub_win)
-        all_fold_windows.append(fold_win)
-        processed_videos += 1
+            X_win, y_win, sub_win, fold_win = create_sliding_windows_for_video(
+                video_features=video_feats,
+                label=label,
+                subject_id=subject_id,
+                fold_id=fold_id,
+                seq_length=args.seq_length,
+                step_size=args.step_size
+            )
 
-    pipeline.close()
+            all_X_windows.append(X_win)
+            all_y_windows.append(y_win)
+            all_sub_windows.append(sub_win)
+            all_fold_windows.append(fold_win)
+            processed_videos += 1
+        pipeline.close()
 
     if not all_X_windows:
         print("❌ Error: No valid feature sequences could be extracted.")
