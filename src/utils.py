@@ -177,11 +177,18 @@ def plot_confusion_matrix(
         save_path: Optional filepath to save the figure.
         normalize: Whether to normalize matrix values to percentages [0, 1].
     """
-    cm_arr = np.array(cm, dtype=np.float64)
-    fmt = "d"
     if normalize:
+        cm_arr = np.array(cm, dtype=np.float64)
         cm_arr = cm_arr / (cm_arr.sum(axis=1, keepdims=True) + 1e-8)
         fmt = ".2%"
+    else:
+        cm_arr = np.asarray(cm)
+        if np.issubdtype(cm_arr.dtype, np.floating) and not np.all(np.equal(np.mod(cm_arr, 1), 0)):
+            cm_arr = cm_arr.astype(np.float64)
+            fmt = ".2f"
+        else:
+            cm_arr = cm_arr.astype(np.int64)
+            fmt = "d"
 
     plt.figure(figsize=(7, 6))
     if SEABORN_AVAILABLE:
@@ -205,7 +212,7 @@ def plot_confusion_matrix(
         for i in range(cm_arr.shape[0]):
             for j in range(cm_arr.shape[1]):
                 val = cm_arr[i, j]
-                txt = f"{val:.2%}" if normalize else f"{int(val)}"
+                txt = f"{val:.2%}" if normalize else (f"{val:.2f}" if fmt == ".2f" else f"{int(val)}")
                 plt.text(
                     j, i, txt,
                     horizontalalignment="center",
