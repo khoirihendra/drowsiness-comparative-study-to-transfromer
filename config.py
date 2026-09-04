@@ -87,6 +87,11 @@ FRAME_RESIZE = (640, 480)     # Width, Height for face landmarking
 FEATURE_NAMES = ["EAR", "MAR", "Pitch", "Yaw", "Roll"]
 TOTAL_RAW_FEATURES = 5
 
+# Placeholder emitted when MediaPipe cannot detect a face in a sampled frame.
+# Keep this definition centralized so extraction and integrity checks cannot drift.
+MISSING_FEATURE_VECTOR = (0.3, 0.0, 0.0, 0.0, 0.0)
+MAX_ALLOWED_PADDING_RATE = 0.50
+
 # Feature subset slicing configurations:
 FEATURE_SUBSETS = {
     "ear": {

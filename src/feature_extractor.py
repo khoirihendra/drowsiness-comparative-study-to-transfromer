@@ -16,6 +16,8 @@ from typing import List, Optional, Tuple, Union
 import cv2
 import numpy as np
 
+from config import MISSING_FEATURE_VECTOR
+
 try:
     import mediapipe as mp
     from mediapipe.tasks import python
@@ -199,7 +201,12 @@ class FacialLandmarkerPipeline:
                         running_mode=vision.RunningMode.IMAGE
                     )
                     self.detector = vision.FaceLandmarker.create_from_options(options)
-                    self.mode = f"tasks_api ({'GPU' if delegate == python.BaseOptions.Delegate.GPU else 'CPU'})"
+                    # `mode` is a machine-readable backend identifier.  Do not add
+                    # display text here: process_frame() dispatches on this value.
+                    self.mode = "tasks_api"
+                    self.delegate_name = (
+                        "GPU" if delegate == python.BaseOptions.Delegate.GPU else "CPU"
+                    )
                     break
                 except Exception as e:
                     if delegate == python.BaseOptions.Delegate.GPU:
@@ -263,7 +270,7 @@ def extract_features_from_video(
     frame_skip: int = 5,
     max_frames: Optional[int] = None,
     resize_dim: Tuple[int, int] = (640, 480),
-    default_padding: Tuple[float, float, float, float, float] = (0.3, 0.0, 0.0, 0.0, 0.0)
+    default_padding: Tuple[float, float, float, float, float] = MISSING_FEATURE_VECTOR
 ) -> np.ndarray:
     """
     Extract frame-by-frame 5 features (EAR, MAR, Pitch, Yaw, Roll) from a video file.
@@ -321,4 +328,3 @@ def extract_features_from_video(
 
     cap.release()
     return np.array(features, dtype=np.float32)
-

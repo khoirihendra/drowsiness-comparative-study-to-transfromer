@@ -29,7 +29,9 @@ from config import (
     SEQ_LENGTH,
     STEP_SIZE,
     FEATURES_DIR,
-    LABEL_NAMES
+    LABEL_NAMES,
+    MAX_ALLOWED_PADDING_RATE,
+    TOTAL_FOLDS,
 )
 from src.utils import set_seed
 from src.feature_extractor import FacialLandmarkerPipeline, extract_features_from_video
@@ -47,9 +49,13 @@ def parse_args():
     )
     parser.add_argument(
         "--dataset_path",
+        nargs="+",
         type=str,
-        default=DEFAULT_DATASET_PATH,
-        help="Root directory containing UTA-RLDD video files."
+        default=[DEFAULT_DATASET_PATH],
+        help=(
+            "One or more root directories containing UTA-RLDD videos. Multiple roots are "
+            "useful on Kaggle when Fold 5 is mounted as a separate dataset."
+        )
     )
     parser.add_argument(
         "--output_path",
@@ -98,6 +104,15 @@ def parse_args():
         default=4,
         help="Number of parallel worker processes for video extraction (default: 4)."
     )
+    parser.add_argument(
+        "--max_padding_rate",
+        type=float,
+        default=MAX_ALLOWED_PADDING_RATE,
+        help=(
+            "Abort without saving when the missing-face padding rate exceeds this value "
+            f"(default: {MAX_ALLOWED_PADDING_RATE:.2f})."
+        )
+    )
     return parser.parse_args()
 
 
@@ -135,10 +150,13 @@ def main():
     args = parse_args()
     set_seed(42)
 
+    if not 0.0 <= args.max_padding_rate <= 1.0:
+        raise ValueError("--max_padding_rate must be between 0 and 1.")
+
     print("=" * 70)
     print("UTA-RLDD ZERO-LEAKAGE FEATURE EXTRACTION PIPELINE")
     print("=" * 70)
-    print(f"Dataset Path : {args.dataset_path}")
+    print(f"Dataset Paths: {args.dataset_path}")
     print(f"Output File  : {args.output_path}")
     print(f"Frame Skip   : {args.frame_skip} (Sample every {args.frame_skip}th frame)")
     print(f"Max Frames   : {args.max_frames if args.max_frames else 'Full Video (Unlimited)'}")
@@ -149,7 +167,11 @@ def main():
     print("=" * 70)
 
     # 1. Discover all videos
-    video_files = find_all_video_files(args.dataset_path)
+    video_files = sorted({
+        video
+        for dataset_path in args.dataset_path
+        for video in find_all_video_files(dataset_path)
+    })
     if not video_files:
         print(f"❌ Error: No video files found in {args.dataset_path}")
         print("Please check the dataset path and try again.")
@@ -248,6 +270,15 @@ def main():
         subjects=sub_data
     )
 
+    # Reject broken extraction output before an expensive training run can use it.
+    integrity = dataset.validate()
+    padding_rate = float(integrity["padding_rate"])
+    if padding_rate > args.max_padding_rate:
+        raise RuntimeError(
+            f"Extraction aborted: missing-face padding rate is {padding_rate:.2%}, above "
+            f"the configured limit of {args.max_padding_rate:.2%}. No NPZ was saved."
+        )
+
     # 5. Save to disk
     dataset.save_npz(args.output_path)
 
@@ -264,10 +295,21 @@ def main():
         pct = (count / len(dataset)) * 100
         print(f"  - [{c_idx}] {c_name:<14}: {count:>6} samples ({pct:.1f}%)")
 
+    print(f"\nMissing-face padding rate: {padding_rate:.2%}")
+    for warning in integrity["warnings"]:
+        print(f"Warning: {warning}")
+
     print("\nFold Distribution:")
-    for f_idx in range(1, 6):
+    for f_idx in dataset.available_folds:
         count = int(np.sum(dataset.folds == f_idx))
         print(f"  - Fold {f_idx} : {count:>6} samples")
+
+    missing_folds = sorted(set(range(1, TOTAL_FOLDS + 1)) - set(dataset.available_folds))
+    if missing_folds:
+        print(
+            f"Warning: missing folds {missing_folds}. The saved archive is valid for "
+            f"{len(dataset.available_folds)}-fold evaluation, not {TOTAL_FOLDS}-fold evaluation."
+        )
 
     print(f"\nSaved .npz dataset to: {args.output_path}")
     print("=" * 70)

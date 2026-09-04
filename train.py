@@ -72,6 +72,20 @@ from src.models import MODEL_BUILDERS
 from src.models.xgboost_model import train_xgboost_model, evaluate_xgboost_model
 
 
+def standardize_sequence_splits(X_train, X_val, X_test):
+    """Standardize each feature using training-fold statistics only."""
+    mean = np.mean(X_train, axis=(0, 1), dtype=np.float64).astype(np.float32)
+    std = np.std(X_train, axis=(0, 1), dtype=np.float64).astype(np.float32)
+    safe_std = np.where(std < 1e-8, 1.0, std).astype(np.float32)
+
+    # Fold slicing already returns copies, so in-place scaling saves peak memory.
+    for split in (X_train, X_val, X_test):
+        split -= mean
+        split /= safe_std
+
+    return mean, safe_std
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Train drowsiness detection models with UTA-RLDD 5-Fold Cross-Validation."
@@ -149,6 +163,8 @@ def train_single_fold_nn(
         one_hot=True
     )
 
+    feature_mean, feature_std = standardize_sequence_splits(X_train, X_val, X_test)
+
     input_shape = (X_train.shape[1], X_train.shape[2])
     builder = MODEL_BUILDERS[model_name]
     model = builder(
@@ -220,6 +236,8 @@ def train_single_fold_nn(
     metrics["test_inference_time_sec"] = float(test_duration_sec)
     metrics["inference_latency_ms_per_sample"] = float(latency_ms)
     metrics["inference_throughput_fps"] = float(throughput_fps)
+    metrics["normalization_mean"] = feature_mean.tolist()
+    metrics["normalization_std"] = feature_std.tolist()
 
     # Save curve and confusion matrix figures
     curve_fig_path = FIGURES_DIR / f"{model_name}_{feature_subset}_fold{test_fold}_learning_curves.png"
@@ -321,10 +339,26 @@ def main():
 
     print("Loading dataset...")
     dataset = UTARLDDDataset.load_from_files(args.data_path)
+    integrity = dataset.validate()
     print(f"Dataset successfully loaded: {len(dataset)} sequence samples.")
+    print(
+        f"Integrity check passed: {integrity['num_subjects']} subjects, "
+        f"folds {integrity['available_folds']}, padding {integrity['padding_rate']:.2%}."
+    )
+    for warning in integrity["warnings"]:
+        print(f"Warning: {warning}")
 
     # 2. Determine folds to run
-    folds_to_run = [args.fold] if args.fold in range(1, 6) else list(range(1, TOTAL_FOLDS + 1))
+    if args.fold != 0 and args.fold not in dataset.available_folds:
+        raise ValueError(
+            f"Requested fold {args.fold} is unavailable; present folds: {dataset.available_folds}."
+        )
+    folds_to_run = [args.fold] if args.fold != 0 else dataset.available_folds
+    if len(folds_to_run) != TOTAL_FOLDS:
+        print(
+            f"Warning: running {len(folds_to_run)} folds ({folds_to_run}), not the complete "
+            f"{TOTAL_FOLDS}-fold UTA-RLDD benchmark."
+        )
 
     fold_results = []
     for f_idx in folds_to_run:
@@ -350,7 +384,7 @@ def main():
         fold_results.append(res)
         print(f"\nFold {f_idx} Results -> Accuracy: {res['accuracy']*100:.2f}%, Macro F1: {res['f1_macro']*100:.2f}%")
 
-    # 3. Compute 5-Fold Cross Validation Average & Std
+    # 3. Compute cross-validation average & standard deviation.
     accs = [r["accuracy"] for r in fold_results]
     f1s = [r["f1_macro"] for r in fold_results]
     precs = [r["precision_macro"] for r in fold_results]
@@ -363,6 +397,7 @@ def main():
         "model": args.model,
         "feature_subset": args.features,
         "num_folds_evaluated": len(fold_results),
+        "fold_ids": folds_to_run,
         "mean_accuracy": float(np.mean(accs)),
         "std_accuracy": float(np.std(accs)),
         "mean_f1_macro": float(np.mean(f1s)),
@@ -386,7 +421,7 @@ def main():
     save_json(summary, summary_path)
 
     print("\n" + "=" * 70)
-    print(f"5-FOLD CROSS-VALIDATION SUMMARY: {args.model.upper()} ({args.features})")
+    print(f"{len(fold_results)}-FOLD CROSS-VALIDATION SUMMARY: {args.model.upper()} ({args.features})")
     print("=" * 70)
     for r in fold_results:
         t_time = r.get("training_time_sec", 0.0)

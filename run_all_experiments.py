@@ -16,7 +16,7 @@ from pathlib import Path
 # Ensure project root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import SUPPORTED_MODELS, FEATURE_SUBSETS, FEATURES_DIR, SEED
+from config import SUPPORTED_MODELS, FEATURE_SUBSETS, FEATURES_DIR, SEED, TOTAL_FOLDS
 from src.utils import set_seed
 from train import train_single_fold_nn, train_single_fold_xgboost
 from src.dataset import UTARLDDDataset
@@ -80,6 +80,19 @@ def main():
     print("=" * 80)
 
     dataset = UTARLDDDataset.load_from_files(args.data_path)
+    integrity = dataset.validate()
+    folds_to_run = dataset.available_folds
+    print(
+        f"Integrity check passed: {integrity['num_subjects']} subjects, "
+        f"folds {folds_to_run}, padding {integrity['padding_rate']:.2%}."
+    )
+    for warning in integrity["warnings"]:
+        print(f"Warning: {warning}")
+    if len(folds_to_run) != TOTAL_FOLDS:
+        print(
+            f"Warning: this archive contains {len(folds_to_run)} folds, not the complete "
+            f"{TOTAL_FOLDS}-fold UTA-RLDD benchmark. Results will be labelled accordingly."
+        )
     total_experiments = len(args.models) * len(args.features)
     exp_idx = 0
 
@@ -90,7 +103,7 @@ def main():
             print("-" * 80)
 
             fold_results = []
-            for fold_idx in range(1, 6):
+            for fold_idx in folds_to_run:
                 if model_name == "xgboost":
                     res = train_single_fold_xgboost(
                         feature_subset=feat_sub,
@@ -122,6 +135,7 @@ def main():
                 "model": model_name,
                 "feature_subset": feat_sub,
                 "num_folds_evaluated": len(fold_results),
+                "fold_ids": folds_to_run,
                 "mean_accuracy": float(np.mean(accs)),
                 "std_accuracy": float(np.std(accs)),
                 "mean_f1_macro": float(np.mean(f1s)),

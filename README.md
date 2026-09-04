@@ -92,6 +92,10 @@ pip install -r requirements.txt
 
 Download the dataset from Kaggle or official sources:
 - **Kaggle Dataset**: [UTA Real-Life Drowsiness Dataset](https://www.kaggle.com/datasets/rishab260/uta-reallife-drowsiness-dataset)
+- **Missing Fold 5 supplement**: [UTA-RLDD Fold 5](https://www.kaggle.com/datasets/mathiasviborg/uta-rldd-fold5)
+
+> **Important:** the first Kaggle upload contains folds 1-4 only. Add the Fold 5
+> supplement as a second Kaggle input for the complete 60-subject benchmark.
 
 The dataset contains videos for 60 subjects across 3 drowsiness states:
 - `0.mp4` / `0.mov`: **Alert** (Label 0)
@@ -113,11 +117,16 @@ The dataset contains videos for 60 subjects across 3 drowsiness states:
 Extract EAR, MAR, and Head Pose angles from raw videos:
 ```bash
 python extract_features.py \
-    --dataset_path /path/to/uta-reallife-drowsiness-dataset \
+    --dataset_path /path/to/uta-rldd-folds-1-to-4 /path/to/uta-rldd-fold-5 \
     --output_path output/extracted_features/uta_rldd_features_seq30.npz \
     --frame_skip 5 \
     --seq_length 30
 ```
+
+Extraction now performs an integrity check before saving. It aborts if MediaPipe
+produces constant features or if more than 50% of sampled frames use missing-face
+padding. Change the latter threshold explicitly with `--max_padding_rate` only after
+inspecting the affected videos.
 
 ### Step 2: Training & 5-Fold Cross-Validation
 Train any model with a specific feature subset across all 5 folds:

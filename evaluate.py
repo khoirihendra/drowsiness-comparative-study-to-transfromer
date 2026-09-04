@@ -62,6 +62,9 @@ def generate_comparison_plots(df: pd.DataFrame) -> None:
     if df.empty:
         return
 
+    fold_counts = sorted(int(value) for value in df["num_folds"].dropna().unique())
+    cv_label = f"{fold_counts[0]}-Fold" if len(fold_counts) == 1 else "Mixed-Fold"
+
     # Pivot table for accuracy
     pivot_acc = df.pivot(index="model", columns="feature_subset", values="mean_accuracy")
     results_acc = pivot_acc.to_dict(orient="index")
@@ -70,7 +73,7 @@ def generate_comparison_plots(df: pd.DataFrame) -> None:
     plot_comparison_bar_chart(
         results=results_acc,
         metric_key="accuracy",
-        metric_display_name="5-Fold Cross-Validation Accuracy (%)",
+        metric_display_name=f"{cv_label} Cross-Validation Accuracy (%)",
         title="UTA-RLDD Drowsiness Detection Accuracy (Ablation Study)",
         save_path=chart_path_acc
     )
@@ -84,7 +87,7 @@ def generate_comparison_plots(df: pd.DataFrame) -> None:
     plot_comparison_bar_chart(
         results=results_f1,
         metric_key="f1",
-        metric_display_name="5-Fold Macro F1-Score (%)",
+        metric_display_name=f"{cv_label} Cross-Validation Macro F1-Score (%)",
         title="UTA-RLDD Drowsiness Detection Macro F1-Score (Ablation Study)",
         save_path=chart_path_f1
     )
@@ -117,7 +120,7 @@ def main():
         print("Run 'python train.py' or 'python run_all_experiments.py' first.")
         return
 
-    print("\n--- 5-Fold Cross-Validation Summary Table ---")
+    print("\n--- Cross-Validation Summary Table ---")
     print(df.to_string(index=False))
 
     # Format paper-ready markdown table (Standard Benchmark Format)
@@ -144,7 +147,9 @@ def main():
     # Save to file
     table_path = METRICS_DIR / "benchmark_comparison_table.md"
     with open(table_path, "w", encoding="utf-8") as f:
-        f.write("# UTA-RLDD 5-Fold Cross-Validation Benchmark Results\n\n")
+        fold_counts = sorted(int(value) for value in df["num_folds"].dropna().unique())
+        fold_label = f"{fold_counts[0]}-Fold" if len(fold_counts) == 1 else "Mixed-Fold"
+        f.write(f"# UTA-RLDD {fold_label} Cross-Validation Benchmark Results\n\n")
         f.write(md_table + "\n")
     print(f"\nSaved Markdown table to: {table_path}")
 

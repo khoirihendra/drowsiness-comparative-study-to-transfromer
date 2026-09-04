@@ -14,10 +14,12 @@ import numpy as np
 from config import (
     FOLD_SUBJECT_MAPPING,
     LABEL_MAP,
+    MISSING_FEATURE_VECTOR,
     NUM_CLASSES,
     SEQ_LENGTH,
     STEP_SIZE,
-    FEATURE_SUBSETS
+    FEATURE_SUBSETS,
+    TOTAL_RAW_FEATURES,
 )
 
 
@@ -45,24 +47,20 @@ def parse_video_metadata(video_path: Union[str, Path]) -> Optional[Dict[str, Uni
     """
     path = Path(video_path)
     filename = path.name.lower()
+    stem = path.stem.lower()
     path_str = str(path).replace("\\", "/")
 
     # 1. Determine Class Label (0: Alert, 1: Low Vigilant, 2: Drowsy)
     label = None
-    if re.match(r"^0[\._\-]", filename) or filename == "0.mp4" or filename.startswith("0"):
+    numeric_label = re.match(r"^(10|5|0)(?=$|[._\-\s(])", stem)
+    if numeric_label:
+        label = LABEL_MAP[numeric_label.group(1)]
+    elif "alert" in stem:
         label = 0
-    elif re.match(r"^5[\._\-]", filename) or filename == "5.mp4" or filename.startswith("5"):
+    elif "low" in stem or "vigilant" in stem:
         label = 1
-    elif re.match(r"^10[\._\-]", filename) or filename == "10.mp4" or filename.startswith("10"):
+    elif "drowsy" in stem:
         label = 2
-    else:
-        # Fallback check inside filename
-        if "alert" in filename or "0" in filename:
-            label = 0
-        elif "low" in filename or "5" in filename:
-            label = 1
-        elif "drowsy" in filename or "10" in filename:
-            label = 2
 
     if label is None:
         return None
@@ -71,6 +69,8 @@ def parse_video_metadata(video_path: Union[str, Path]) -> Optional[Dict[str, Uni
     subject_id = None
     # Search directory parts for subject folder (e.g. /1/, /01/, /subject_05/)
     for part in reversed(path.parts[:-1]):
+        if re.search(r"fold", part, re.IGNORECASE):
+            continue
         match = re.search(r"(\d+)", part)
         if match:
             num = int(match.group(1))
@@ -78,13 +78,14 @@ def parse_video_metadata(video_path: Union[str, Path]) -> Optional[Dict[str, Uni
                 subject_id = num
                 break
 
-    # If subject_id not found in path, attempt from filename or default to 1
+    # If subject_id is not represented in the path, do not silently merge the
+    # video into subject 1: that would invalidate subject-independent splits.
     if subject_id is None:
         match = re.search(r"sub(?:ject)?[_-]?(\d+)", filename)
         if match:
             subject_id = int(match.group(1))
         else:
-            subject_id = 1
+            return None
 
     # 3. Determine Fold ID (1 to 5)
     fold_id = None
@@ -200,6 +201,130 @@ class UTARLDDDataset:
     def __len__(self):
         return len(self.y)
 
+    @property
+    def available_folds(self) -> List[int]:
+        """Return the sorted, non-empty fold IDs present in this archive."""
+        return sorted(int(fold) for fold in np.unique(self.folds))
+
+    def validate(self, chunk_size: int = 1_000_000) -> Dict[str, object]:
+        """Validate shapes, metadata, leakage boundaries, and feature signal.
+
+        The feature scan is chunked to avoid allocating another array as large as
+        the extracted dataset.  A completely constant feature tensor is rejected,
+        because it indicates a failed extraction rather than learnable input.
+        """
+        errors: List[str] = []
+        warnings: List[str] = []
+
+        if self.X.ndim != 3:
+            errors.append(f"X must be 3D (samples, timesteps, features), got {self.X.shape}.")
+        elif self.X.shape[2] != TOTAL_RAW_FEATURES:
+            errors.append(
+                f"X must contain {TOTAL_RAW_FEATURES} raw features, got {self.X.shape[2]}."
+            )
+
+        sample_count = len(self.y)
+        lengths = {
+            "X": len(self.X),
+            "y": len(self.y),
+            "folds": len(self.folds),
+            "subjects": len(self.subjects),
+        }
+        if len(set(lengths.values())) != 1:
+            errors.append(f"Dataset arrays have inconsistent sample counts: {lengths}.")
+        if sample_count == 0:
+            errors.append("Dataset contains no samples.")
+
+        invalid_labels = sorted(set(np.unique(self.y).tolist()) - set(range(NUM_CLASSES)))
+        if invalid_labels:
+            errors.append(f"Labels outside [0, {NUM_CLASSES - 1}]: {invalid_labels}.")
+
+        available_folds = self.available_folds
+        if len(available_folds) < 3:
+            errors.append(
+                "At least 3 non-empty folds are required for separate train/validation/test sets; "
+                f"found {available_folds}."
+            )
+
+        if len(self.subjects) == len(self.folds):
+            subject_to_folds = {
+                int(subject): sorted(
+                    int(fold) for fold in np.unique(self.folds[self.subjects == subject])
+                )
+                for subject in np.unique(self.subjects)
+            }
+            leaked_subjects = {
+                subject: folds for subject, folds in subject_to_folds.items() if len(folds) != 1
+            }
+            if leaked_subjects:
+                errors.append(f"Subjects assigned to multiple folds: {leaked_subjects}.")
+
+        invalid_folds = sorted(
+            int(fold) for fold in np.unique(self.folds) if int(fold) not in range(1, 6)
+        )
+        if invalid_folds:
+            errors.append(f"Fold IDs must be in [1, 5], got {invalid_folds}.")
+        if np.any(self.subjects < 1):
+            errors.append("Subject IDs must be positive integers.")
+
+        padding_count = 0
+        total_timesteps = 0
+        feature_min = None
+        feature_max = None
+        if self.X.ndim == 3 and self.X.shape[2] > 0 and len(self.X) > 0:
+            flat = self.X.reshape(-1, self.X.shape[2])
+            feature_min = np.full(self.X.shape[2], np.inf, dtype=np.float64)
+            feature_max = np.full(self.X.shape[2], -np.inf, dtype=np.float64)
+            padding = np.asarray(MISSING_FEATURE_VECTOR, dtype=self.X.dtype)
+
+            for start in range(0, len(flat), chunk_size):
+                chunk = flat[start : start + chunk_size]
+                if not np.isfinite(chunk).all():
+                    errors.append("Feature tensor contains NaN or infinite values.")
+                    break
+                feature_min = np.minimum(feature_min, np.min(chunk, axis=0))
+                feature_max = np.maximum(feature_max, np.max(chunk, axis=0))
+                if len(padding) == chunk.shape[1]:
+                    padding_count += int(np.count_nonzero(np.all(chunk == padding, axis=1)))
+                total_timesteps += len(chunk)
+
+            if np.all(feature_min == feature_max):
+                errors.append(
+                    "All extracted features are constant. This usually means MediaPipe never "
+                    "reached the detector and every frame was replaced by padding. Re-extract "
+                    "the raw videos; this NPZ cannot be used for training."
+                )
+            else:
+                constant_indices = np.flatnonzero(feature_min == feature_max).tolist()
+                if constant_indices:
+                    warnings.append(f"Constant feature columns detected: {constant_indices}.")
+
+        padding_rate = padding_count / total_timesteps if total_timesteps else 0.0
+        if padding_rate >= 0.99:
+            errors.append(f"Padding rate is {padding_rate:.2%}; extraction produced no usable signal.")
+        elif padding_rate > 0.20:
+            warnings.append(f"High missing-face padding rate: {padding_rate:.2%}.")
+
+        class_counts = [int(np.count_nonzero(self.y == label)) for label in range(NUM_CLASSES)]
+        fold_counts = {
+            fold: int(np.count_nonzero(self.folds == fold)) for fold in available_folds
+        }
+        summary: Dict[str, object] = {
+            "num_samples": sample_count,
+            "num_subjects": int(len(np.unique(self.subjects))),
+            "available_folds": available_folds,
+            "class_counts": class_counts,
+            "fold_counts": fold_counts,
+            "padding_rate": float(padding_rate),
+            "feature_min": feature_min.tolist() if feature_min is not None else [],
+            "feature_max": feature_max.tolist() if feature_max is not None else [],
+            "warnings": warnings,
+        }
+
+        if errors:
+            raise ValueError("Dataset integrity check failed:\n- " + "\n- ".join(errors))
+        return summary
+
     @classmethod
     def load_from_files(cls, npz_or_npy_path: Union[str, Path]) -> "UTARLDDDataset":
         """
@@ -215,23 +340,11 @@ class UTARLDDDataset:
                 subjects=data["subjects"]
             )
         elif path.suffix == ".npy":
-            # Support loading legacy unpartitioned npy arrays
-            X = np.load(path)
-            y_path = path.parent / path.name.replace("X_features", "y_labels").replace("X_", "y_")
-            if not y_path.exists():
-                y_path = path.parent / "y_labels_rldd.npy"
-            y = np.load(y_path)
-
-            # Synthesize 5-fold partition deterministically if metadata is absent
-            num_samples = len(y)
-            folds = np.zeros(num_samples, dtype=np.int32)
-            subjects = np.zeros(num_samples, dtype=np.int32)
-            for i in range(num_samples):
-                fold = (i % 5) + 1
-                folds[i] = fold
-                subjects[i] = fold * 12
-
-            return cls(X=X, y=y, folds=folds, subjects=subjects)
+            raise ValueError(
+                "Legacy .npy feature files do not contain subject/fold metadata and cannot "
+                "support leakage-safe evaluation. Re-run extract_features.py to create an .npz "
+                "archive with X, y, folds, and subjects."
+            )
         else:
             raise ValueError(f"Unsupported file format: {path}")
 
@@ -276,9 +389,25 @@ class UTARLDDDataset:
         if test_fold < 1 or test_fold > 5:
             raise ValueError(f"test_fold must be between 1 and 5, got {test_fold}")
 
+        available_folds = self.available_folds
+        if test_fold not in available_folds:
+            raise ValueError(
+                f"test_fold {test_fold} is empty or absent; available folds: {available_folds}"
+            )
+        if len(available_folds) < 3:
+            raise ValueError(
+                f"Need at least 3 folds for train/validation/test, found {available_folds}."
+            )
+
         if val_fold is None:
-            # Deterministic validation fold from remaining folds
-            val_fold = (test_fold % 5) + 1
+            # Deterministic validation fold from the folds actually present.
+            test_position = available_folds.index(test_fold)
+            val_fold = available_folds[(test_position + 1) % len(available_folds)]
+
+        if val_fold not in available_folds:
+            raise ValueError(
+                f"val_fold {val_fold} is empty or absent; available folds: {available_folds}"
+            )
 
         if val_fold == test_fold:
             raise ValueError(f"val_fold ({val_fold}) cannot be the same as test_fold ({test_fold})")
@@ -296,6 +425,20 @@ class UTARLDDDataset:
         X_train, y_train_raw = X_sliced[train_mask], self.y[train_mask]
         X_val, y_val_raw = X_sliced[val_mask], self.y[val_mask]
         X_test, y_test_raw = X_sliced[test_mask], self.y[test_mask]
+
+        split_labels = {
+            "train": np.unique(y_train_raw).tolist(),
+            "validation": np.unique(y_val_raw).tolist(),
+            "test": np.unique(y_test_raw).tolist(),
+        }
+        expected_labels = list(range(NUM_CLASSES))
+        invalid_splits = {
+            name: labels for name, labels in split_labels.items() if labels != expected_labels
+        }
+        if invalid_splits:
+            raise ValueError(
+                f"Every split must contain labels {expected_labels}; got {invalid_splits}."
+            )
 
         if one_hot:
             y_train = to_categorical(y_train_raw, num_classes=NUM_CLASSES)
