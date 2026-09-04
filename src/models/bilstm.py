@@ -13,7 +13,8 @@ def build_bilstm_model(
     input_shape: Tuple[int, int],
     num_classes: int = 3,
     l2_reg: float = 0.001,
-    dropout_rate: float = 0.4
+    dropout_rate: float = 0.4,
+    **kwargs
 ) -> tf.keras.Model:
     """
     Construct Bidirectional LSTM model with Batch Normalization and L2 regularization.

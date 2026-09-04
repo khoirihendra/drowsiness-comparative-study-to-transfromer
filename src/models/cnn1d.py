@@ -13,7 +13,8 @@ def build_1dcnn_model(
     input_shape: Tuple[int, int],
     num_classes: int = 3,
     l2_reg: float = 0.001,
-    dropout_rate: float = 0.4
+    dropout_rate: float = 0.4,
+    **kwargs
 ) -> tf.keras.Model:
     """
     Construct 1D-CNN model for temporal sequence processing.

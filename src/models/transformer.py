@@ -2,7 +2,7 @@
 Time-Series Transformer Architecture (Multi-Head Self-Attention) for Drowsiness Classification.
 """
 
-from typing import Tuple
+from typing import Tuple, Optional
 import tensorflow as tf
 from tensorflow.keras import layers, regularizers
 from tensorflow.keras.models import Model
@@ -26,6 +26,7 @@ def transformer_encoder_block(
         num_heads=num_heads,
         dropout=dropout
     )(norm1, norm1)
+    attn = layers.Dropout(dropout)(attn)
     res1 = layers.Add()([attn, inputs])
 
     # 2. Feed-Forward Sub-layer
@@ -45,8 +46,10 @@ def build_transformer_model(
     num_heads: int = 4,
     ff_dim: int = 128,
     num_transformer_blocks: int = 2,
-    dropout: float = 0.3,
-    l2_reg: float = 0.001
+    dropout_rate: float = 0.3,
+    dropout: Optional[float] = None,
+    l2_reg: float = 0.001,
+    **kwargs
 ) -> tf.keras.Model:
     """
     Construct Time-Series Transformer architecture.
@@ -58,12 +61,15 @@ def build_transformer_model(
         num_heads: Number of attention heads.
         ff_dim: Feed-forward hidden dimension.
         num_transformer_blocks: Number of stacked encoder layers.
-        dropout: Attention & dense dropout rate.
+        dropout_rate: Dropout rate (regularization).
+        dropout: Optional alias for dropout_rate.
         l2_reg: L2 regularization factor.
 
     Returns:
         tf.keras.Model instance.
     """
+    eff_dropout = dropout if dropout is not None else dropout_rate
+
     inputs = layers.Input(shape=input_shape)
 
     # Linear projection to expand feature dimension to 64
@@ -76,7 +82,7 @@ def build_transformer_model(
             head_size=head_size,
             num_heads=num_heads,
             ff_dim=ff_dim,
-            dropout=dropout
+            dropout=eff_dropout
         )
 
     # Temporal aggregation via Global Average Pooling
@@ -85,7 +91,7 @@ def build_transformer_model(
     # Classification Head
     x = layers.Dense(64, activation="relu", kernel_regularizer=regularizers.l2(l2_reg))(x)
     x = layers.BatchNormalization()(x)
-    x = layers.Dropout(dropout)(x)
+    x = layers.Dropout(eff_dropout)(x)
 
     x = layers.Dense(32, activation="relu")(x)
 
