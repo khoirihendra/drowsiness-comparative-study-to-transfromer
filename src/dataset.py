@@ -89,24 +89,29 @@ def parse_video_metadata(video_path: Union[str, Path]) -> Optional[Dict[str, Uni
 
     # 3. Determine Fold ID (1 to 5)
     fold_id = None
+    fold_source = None
     # Check if 'fold1' .. 'fold5' is explicitly in the path
     fold_match = re.search(r"fold[_-]?([1-5])", path_str, re.IGNORECASE)
     if fold_match:
         fold_id = int(fold_match.group(1))
+        fold_source = "path"
     else:
         # Map subject_id to fold according to UTA-RLDD benchmark specification
         for f_idx, subjects in FOLD_SUBJECT_MAPPING.items():
             if subject_id in subjects:
                 fold_id = f_idx
+                fold_source = "subject_mapping"
                 break
         if fold_id is None:
             fold_id = ((subject_id - 1) // 12) + 1
             fold_id = min(max(fold_id, 1), 5)
+            fold_source = "subject_range_fallback"
 
     return {
         "label": label,
         "subject_id": subject_id,
         "fold_id": fold_id,
+        "fold_source": fold_source,
         "video_path": str(path),
         "filename": filename
     }

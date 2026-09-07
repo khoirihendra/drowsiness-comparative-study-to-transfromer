@@ -163,6 +163,8 @@ class FacialLandmarkerPipeline:
 
         self.mode = None
         self.detector = None
+        self.delegate_name = None
+        self.model_asset_path = None
 
         # 1. Check or auto-download Tasks API model asset if path is provided or default
         target_model_path = model_asset_path
@@ -207,6 +209,7 @@ class FacialLandmarkerPipeline:
                     self.delegate_name = (
                         "GPU" if delegate == python.BaseOptions.Delegate.GPU else "CPU"
                     )
+                    self.model_asset_path = str(Path(target_model_path).resolve())
                     break
                 except Exception as e:
                     if delegate == python.BaseOptions.Delegate.GPU:

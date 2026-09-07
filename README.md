@@ -37,7 +37,9 @@ refactor/
 ├── README.md                      # Complete project documentation & guide
 ├── requirements.txt               # Dependencies with version constraints
 ├── config.py                      # Centralized configuration (hyperparameters, paths, seed)
-├── extract_features.py            # Standalone MediaPipe feature extraction CLI
+├── extract_video_features.py      # Reusable frame-level MediaPipe cache
+├── build_windows.py               # Cheap temporal configuration builder
+├── extract_features.py            # Legacy one-pass extraction + windowing
 ├── train.py                       # 5-Fold Cross-Validation training script
 ├── evaluate.py                    # Evaluation & comparison tables/figures generator
 ├── run_all_experiments.py         # Automated ablation experiment runner
@@ -113,8 +115,62 @@ The dataset contains videos for 60 subjects across 3 drowsiness states:
 
 ## 🚀 Usage Guide
 
-### Step 1: Feature Extraction
-Extract EAR, MAR, and Head Pose angles from raw videos:
+### Step 1: Extract the reusable frame-level cache
+
+Run MediaPipe once for every decoded frame. The command is resumable: completed
+per-video cache files are reused if the same command is interrupted and rerun.
+
+```bash
+python extract_video_features.py \
+    --dataset_path /path/to/uta-rldd-folds-1-to-4 /path/to/uta-rldd-fold-5 \
+    --cache_dir output/video_cache \
+    --model_path models/face_landmarker.task \
+    --num_workers 4
+```
+
+Use `--require_explicit_fold` when every source path contains a `Fold1` through
+`Fold5` directory. Without it, inferred fold assignments are explicitly reported
+in `manifest.json`. Do not use `--max_frames` for the final research dataset; it is
+provided only for quick pipeline checks. By default the extractor also requires
+the canonical inventory of 180 videos, 60 subjects, three labels per subject, and
+12 subjects per fold. `--allow_incomplete_dataset` relaxes this only for deliberate
+partial-data or debug runs.
+
+### Step 2: Build temporal configurations without MediaPipe
+
+Each command below reads the same frame cache. `step_size` is measured in sampled
+timesteps, after `frame_skip` has been applied.
+
+```bash
+python build_windows.py \
+    --cache_dir output/video_cache \
+    --output_path output/extracted_features/fs5_seq30_step1.npz \
+    --frame_skip 5 \
+    --sequence_length 30 \
+    --step_size 1
+```
+
+Another configuration only requires another inexpensive builder command:
+
+```bash
+python build_windows.py \
+    --cache_dir output/video_cache \
+    --output_path output/extracted_features/fs3_seq60_step10.npz \
+    --frame_skip 3 \
+    --sequence_length 60 \
+    --step_size 10
+```
+
+The resulting NPZ remains compatible with `train.py` and additionally stores
+video IDs, detection masks, original frame ranges, timestamps, and build metadata
+for leakage and overlap audits.
+
+### Legacy alternative: one-pass extraction
+
+The older command below still works, but bakes `frame_skip`, sequence length, and
+step size into its output and therefore cannot reuse MediaPipe results across a
+temporal grid:
+
 ```bash
 python extract_features.py \
     --dataset_path /path/to/uta-rldd-folds-1-to-4 /path/to/uta-rldd-fold-5 \
@@ -128,7 +184,7 @@ produces constant features or if more than 50% of sampled frames use missing-fac
 padding. Change the latter threshold explicitly with `--max_padding_rate` only after
 inspecting the affected videos.
 
-### Step 2: Training & 5-Fold Cross-Validation
+### Step 3: Training & 5-Fold Cross-Validation
 Train any model with a specific feature subset across all 5 folds:
 ```bash
 # Example 1: Train BiLSTM with all 5 features (Full 5-Fold CV)
@@ -141,13 +197,13 @@ python train.py --model transformer --features ear_mar --fold 1 --data_path outp
 python train.py --model xgboost --features all --data_path output/extracted_features/uta_rldd_features_seq30.npz
 ```
 
-### Step 3: Benchmark Evaluation & Summary Generation
+### Step 4: Benchmark Evaluation & Summary Generation
 Compile all metrics into a Markdown/LaTeX table and generate comparison charts:
 ```bash
 python evaluate.py
 ```
 
-### Step 4: Run All Ablation Experiments Automatically
+### Step 5: Run All Ablation Experiments Automatically
 Run the complete grid across all models (`bilstm`, `lstm`, `bigru`, `cnn1d`, `transformer`, `xgboost`) and feature sets (`ear`, `ear_mar`, `all`):
 ```bash
 python run_all_experiments.py --data_path output/extracted_features/uta_rldd_features_seq30.npz

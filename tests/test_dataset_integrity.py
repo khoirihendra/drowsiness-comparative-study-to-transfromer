@@ -24,6 +24,7 @@ class DatasetIntegrityTests(unittest.TestCase):
         self.assertEqual(metadata["label"], 2)
         self.assertEqual(metadata["subject_id"], 13)
         self.assertEqual(metadata["fold_id"], 2)
+        self.assertEqual(metadata["fold_source"], "path")
 
     def test_metadata_parser_does_not_treat_fold_number_as_subject(self):
         self.assertIsNone(parse_video_metadata("/dataset/Fold2_part1/10.mp4"))
