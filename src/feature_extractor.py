@@ -125,7 +125,7 @@ def extract_facial_features_from_landmarks(
     Returns:
         Tuple of (ear, mar, pitch, yaw, roll).
     """
-    coords = [(int(pt.x * frame_w), int(pt.y * frame_h)) for pt in landmarks]
+    coords = [(float(pt.x * frame_w), float(pt.y * frame_h)) for pt in landmarks]
 
     # Landmark indices for Left and Right Eye
     left_eye = [coords[33], coords[160], coords[158], coords[133], coords[153], coords[144]]
@@ -241,20 +241,23 @@ class FacialLandmarkerPipeline:
         """
         Process a single RGB frame and extract 5 facial features.
         """
+        self.last_landmarks = None
         if self.mode == "tasks_api":
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
             results = self.detector.detect(mp_image)
             if results.face_landmarks and len(results.face_landmarks) > 0:
+                self.last_landmarks = results.face_landmarks[0]
                 return extract_facial_features_from_landmarks(results.face_landmarks[0], frame_w, frame_h)
             return None
 
         elif self.mode == "solutions_api":
             results = self.detector.process(rgb_frame)
             if results.multi_face_landmarks and len(results.multi_face_landmarks) > 0:
+                self.last_landmarks = results.multi_face_landmarks[0].landmark
                 return extract_facial_features_from_landmarks(results.multi_face_landmarks[0].landmark, frame_w, frame_h)
             return None
 
-        return None
+        raise RuntimeError(f"Unknown landmarker backend: {self.mode!r}")
 
     def close(self):
         """Release underlying landmarker resources."""
@@ -306,7 +309,7 @@ def extract_features_from_video(
                 break
 
             if resize_dim:
-                frame = cv2.resize(frame, resize_dim)
+                frame = resize_preserving_aspect(frame, resize_dim)
 
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = frame.shape[:2]
@@ -328,3 +331,11 @@ def extract_features_from_video(
 
     cap.release()
     return np.array(features, dtype=np.float32)
+
+
+def resize_preserving_aspect(frame, bounds=(640, 480)):
+    """Fit inside bounds using uniform scaling, without stretching or upscaling."""
+    h, w = frame.shape[:2]
+    scale = min(bounds[0] / w, bounds[1] / h, 1.0)
+    size = (max(1, round(w * scale)), max(1, round(h * scale)))
+    return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)

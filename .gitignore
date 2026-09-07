@@ -1,1 +1,5 @@
 /output
+/.venv/
+__pycache__/
+*.pyc
+RESEARCH_WORKFLOW.md

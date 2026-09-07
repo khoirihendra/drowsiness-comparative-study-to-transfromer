@@ -71,7 +71,7 @@ def parse_video_metadata(video_path: Union[str, Path]) -> Optional[Dict[str, Uni
     for part in reversed(path.parts[:-1]):
         if re.search(r"fold", part, re.IGNORECASE):
             continue
-        match = re.search(r"(\d+)", part)
+        match = re.fullmatch(r"(?:sub(?:ject)?[_ -]?)?(\d{1,2})", part, re.IGNORECASE)
         if match:
             num = int(match.group(1))
             if 1 <= num <= 60:

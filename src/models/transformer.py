@@ -8,6 +8,18 @@ from tensorflow.keras import layers, regularizers
 from tensorflow.keras.models import Model
 
 
+@tf.keras.utils.register_keras_serializable(package="Drowsiness")
+class SinusoidalPosition(layers.Layer):
+    """Serializable temporal positions; independent of train/evaluation data."""
+    def call(self, inputs):
+        position = tf.cast(tf.range(tf.shape(inputs)[1])[:, None], tf.float32)
+        channel = tf.range(tf.shape(inputs)[2])[None, :]
+        angle = position / tf.pow(10000.0, tf.cast(2 * (channel // 2), tf.float32)
+                                 / tf.cast(tf.shape(inputs)[2], tf.float32))
+        encoding = tf.where(channel % 2 == 0, tf.sin(angle), tf.cos(angle))
+        return inputs + tf.cast(encoding[None, :, :], inputs.dtype)
+
+
 def transformer_encoder_block(
     inputs: tf.Tensor,
     head_size: int = 64,
@@ -49,6 +61,7 @@ def build_transformer_model(
     dropout_rate: float = 0.3,
     dropout: Optional[float] = None,
     l2_reg: float = 0.001,
+    positional_encoding: bool = True,
     **kwargs
 ) -> tf.keras.Model:
     """
@@ -74,6 +87,8 @@ def build_transformer_model(
 
     # Linear projection to expand feature dimension to 64
     x = layers.Dense(64)(inputs)
+    if positional_encoding:
+        x = SinusoidalPosition(name="time_position")(x)
 
     # Stack Transformer Encoder blocks
     for _ in range(num_transformer_blocks):

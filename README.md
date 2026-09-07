@@ -1,5 +1,11 @@
 # 😴 UTA-RLDD Drowsiness Detection: Reproducible End-to-End Benchmark
 
+> **Workflow v2:** lihat [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md) untuk audit,
+> cache per-video, window berbasis detik, dan eksperimen validation-first.
+> `run_all_experiments.py` sekarang memakai workflow ini; bagian legacy di bawah
+> tidak menggambarkan default runner baru. Implementasi v2 belum diuji atas
+> permintaan pengguna. Hasil tinggi tidak dijamin.
+
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![TensorFlow](https://img.shields.io/badge/TensorFlow-2.12+-orange.svg)](https://tensorflow.org)
 [![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10+-brightgreen.svg)](https://developers.google.com/mediapipe)
@@ -12,7 +18,7 @@ A publication-ready, fully reproducible research codebase for driver drowsiness 
 ## 📌 Key Highlights
 
 - **Strict Zero Data Leakage**: Temporal sliding windows are partitioned at the individual video/subject level. 5-Fold Cross-Validation strictly isolates subjects across train, validation, and test sets.
-- **Official UTA-RLDD 5-Fold Evaluation Protocol**: Evaluates all 5 folds by leaving one fold out for testing and averaging the resulting metrics ($mean \pm std$), making all results directly comparable with standard literature.
+- **Subject-Disjoint Fold Evaluation**: Uses the configured subject folds, with three folds for training, one for validation, and one reserved for testing. Compare against literature only after checking its exact split and selection protocol.
 - **Spatial Micro-Expression & 3D Pose Extraction**: Extracted using Google MediaPipe Face Landmarker / FaceMesh:
   1. **EAR (Eye Aspect Ratio)**: Eye openness and blink duration dynamics.
   2. **MAR (Mouth Aspect Ratio)**: Yawning frequency and duration.
