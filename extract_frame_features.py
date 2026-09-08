@@ -190,7 +190,10 @@ def main():
         }
         tasks = [(video, metadata, args_dict) for video, metadata in pending]
         with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
-            futures = {executor.submit(process_video, task): task for task in tasks}
+            futures = {
+                executor.submit(process_video, task): (task[0], task[1])
+                for task in tasks
+            }
             for future in tqdm(as_completed(futures), total=len(futures), desc="Videos"):
                 video_path, metadata = futures.pop(future)
                 try:
