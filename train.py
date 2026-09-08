@@ -108,7 +108,10 @@ def parse_args():
         "--data_path",
         type=str,
         default=str(FEATURES_DIR / "uta_rldd_features_seq30.npz"),
-        help="Path to pre-extracted .npz or .npy dataset file."
+        help=(
+            "Path to a pre-extracted .npz, X.npy, or directory containing "
+            "X.npy/Y.npy/subject.npy/folds.npy."
+        )
     )
     parser.add_argument(
         "--fold",

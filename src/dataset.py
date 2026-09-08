@@ -23,6 +23,13 @@ from config import (
 )
 
 
+def _as_dtype(array: np.ndarray, dtype, copy: bool) -> np.ndarray:
+    """Cast an array while retaining a same-dtype memmap when copy is disabled."""
+    if not copy and isinstance(array, np.ndarray) and array.dtype == np.dtype(dtype):
+        return array
+    return np.asarray(array, dtype=dtype) if not copy else array.astype(dtype)
+
+
 def to_categorical(y: np.ndarray, num_classes: int = 3) -> np.ndarray:
     """Convert integer class array into one-hot encoded matrix using pure NumPy."""
     y = np.asarray(y, dtype=np.int32)
@@ -184,7 +191,8 @@ class UTARLDDDataset:
         X: np.ndarray,
         y: np.ndarray,
         folds: np.ndarray,
-        subjects: np.ndarray
+        subjects: np.ndarray,
+        copy: bool = True,
     ):
         """
         Args:
@@ -193,13 +201,20 @@ class UTARLDDDataset:
             folds: Array of shape (num_samples,) containing fold indices [1..5].
             subjects: Array of shape (num_samples,) containing subject IDs [1..60].
         """
-        self.X = X.astype(np.float32)
-        self.y = y.astype(np.int32)
-        self.folds = folds.astype(np.int32)
-        self.subjects = subjects.astype(np.int32)
+        self.X = _as_dtype(X, np.float32, copy)
+        self.y = _as_dtype(y, np.int32, copy)
+        self.folds = _as_dtype(folds, np.int32, copy)
+        self.subjects = _as_dtype(subjects, np.int32, copy)
 
     def __len__(self):
         return len(self.y)
+
+    def close(self) -> None:
+        """Close any memory-mapped NPY arrays held by this dataset."""
+        for array in (self.X, self.y, self.folds, self.subjects):
+            mmap = getattr(array, "_mmap", None)
+            if mmap is not None:
+                mmap.close()
 
     @property
     def available_folds(self) -> List[int]:
@@ -328,9 +343,26 @@ class UTARLDDDataset:
     @classmethod
     def load_from_files(cls, npz_or_npy_path: Union[str, Path]) -> "UTARLDDDataset":
         """
-        Load dataset from saved .npz archive or legacy .npy files.
+        Load a saved .npz archive or a four-array NPY dataset directory.
         """
         path = Path(npz_or_npy_path)
+        if path.is_dir():
+            names = {
+                "X": path / "X.npy",
+                "y": path / "Y.npy",
+                "subjects": path / "subject.npy",
+                "folds": path / "folds.npy",
+            }
+            missing = [str(item) for item in names.values() if not item.exists()]
+            if missing:
+                raise ValueError(f"Four-array dataset directory is missing: {missing}")
+            return cls(
+                X=np.load(names["X"], mmap_mode="r"),
+                y=np.load(names["y"], mmap_mode="r"),
+                folds=np.load(names["folds"], mmap_mode="r"),
+                subjects=np.load(names["subjects"], mmap_mode="r"),
+                copy=False,
+            )
         if path.suffix == ".npz":
             data = np.load(path)
             return cls(
@@ -340,10 +372,11 @@ class UTARLDDDataset:
                 subjects=data["subjects"]
             )
         elif path.suffix == ".npy":
+            if path.name == "X.npy":
+                return cls.load_from_files(path.parent)
             raise ValueError(
-                "Legacy .npy feature files do not contain subject/fold metadata and cannot "
-                "support leakage-safe evaluation. Re-run extract_features.py to create an .npz "
-                "archive with X, y, folds, and subjects."
+                "A single legacy .npy file cannot support leakage-safe evaluation. Pass the "
+                "directory containing X.npy, Y.npy, subject.npy, and folds.npy instead."
             )
         else:
             raise ValueError(f"Unsupported file format: {path}")

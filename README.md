@@ -38,6 +38,8 @@ refactor/
 ├── requirements.txt               # Dependencies with version constraints
 ├── config.py                      # Centralized configuration (hyperparameters, paths, seed)
 ├── extract_features.py            # Standalone MediaPipe feature extraction CLI
+├── extract_frame_features.py      # Resumable, per-fold frame-feature extraction
+├── build_sequences.py             # Rebuild temporal windows without MediaPipe
 ├── train.py                       # 5-Fold Cross-Validation training script
 ├── evaluate.py                    # Evaluation & comparison tables/figures generator
 ├── run_all_experiments.py         # Automated ablation experiment runner
@@ -127,6 +129,54 @@ Extraction now performs an integrity check before saving. It aborts if MediaPipe
 produces constant features or if more than 50% of sampled frames use missing-face
 padding. Change the latter threshold explicitly with `--max_padding_rate` only after
 inspecting the affected videos.
+
+#### Timeout-safe Kaggle workflow (recommended)
+
+MediaPipe inference and temporal window creation are separated in this workflow.
+Run one fold per Kaggle session/version. Each completed video is checkpointed, so
+re-running an interrupted fold resumes from the remaining videos.
+
+```bash
+# Run only one of these per Kaggle session/version.
+python extract_frame_features.py \
+    --dataset_path /kaggle/input/uta-folds-1-to-4 /kaggle/input/uta-fold-5 \
+    --fold 1 \
+    --output_dir /kaggle/working/frame_features \
+    --frame_skip 1 \
+    --num_workers 4
+```
+
+Change `--fold 1` to `2`, `3`, `4`, or `5` in later runs. `--frame_skip 1`
+extracts a feature vector from every source frame. Use `--frame_skip 5` if the
+intended temporal sampling rate is every fifth frame; all fold archives supplied
+to the sequence builder must use the same value.
+
+Preserve each completed `frame_features_fold_N.npz` archive as a Kaggle dataset,
+then attach all five fold outputs and build any desired temporal configuration.
+Input directories are searched recursively, so each fold may be mounted under a
+different Kaggle path. The `video_checkpoints` folder is only needed to resume an
+interrupted extraction; it is not needed once the fold archive is complete.
+
+```bash
+python build_sequences.py \
+    --input /kaggle/input/features-fold-1 \
+            /kaggle/input/features-fold-2 \
+            /kaggle/input/features-fold-3 \
+            /kaggle/input/features-fold-4 \
+            /kaggle/input/features-fold-5 \
+    --output_dir /kaggle/working/sequences_seq60_step5 \
+    --seq_length 60 \
+    --step_size 5 \
+    --format both
+```
+
+The four-array output is `X.npy`, `Y.npy`, `subject.npy`, and `folds.npy`.
+With `--format both`, a trainer-compatible compressed `.npz` is also created.
+You can later build a different window (for example, sequence length 30 and
+stride 1) from the same fold archives without extracting features again.
+
+Important: windows are generated separately inside each original video. They
+never cross video, subject, or fold boundaries.
 
 ### Step 2: Training & 5-Fold Cross-Validation
 Train any model with a specific feature subset across all 5 folds:
