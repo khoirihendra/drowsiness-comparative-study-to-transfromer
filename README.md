@@ -114,6 +114,58 @@ The dataset contains videos for 60 subjects across 3 drowsiness states:
 ## 🚀 Usage Guide
 
 ### Step 1: Feature Extraction
+To extract once and experiment with different windows later, use the raw-frame CLI:
+
+```bash
+python extract_raw_features.py \
+    --dataset_path /path/to/uta-rldd-folds-1-to-4 /path/to/uta-rldd-fold-5 \
+    --output_path output/extracted_features/uta_rldd_raw
+```
+
+This saves numeric arrays loadable with `allow_pickle=False`:
+
+| File | Shape | Contents |
+|---|---|---|
+| `x.npy` | `(N, 5)` float32 | EAR, MAR, Pitch, Yaw, Roll, in chronological order within each video |
+| `y.npy` | `(N,)` int32 | Frame labels: 0 alert, 1 low vigilant, 2 drowsy |
+| `subjects.npy` | `(N,)` int32 | Subject ID per frame |
+| `folds.npy` | `(N,)` int32 | Fold ID per frame, using the existing parser |
+
+`manifest.json` records each video's exclusive `start:stop` slice, source path,
+sampling settings, and missing-face padding counts. Always window each video
+slice separately—even two recordings with the same subject and label must remain
+separate. No windows or normalization are applied during raw extraction. Short
+videos and missing-face placeholders are retained to preserve the sampled timeline.
+By default every frame is sampled and the full video is processed. Use
+`--frame_skip 5` to match the existing extractor's sampling rate, or `--max_frames`
+for a trial run. Skipped frames cannot be recovered from the resulting arrays.
+Use a new output directory for each extraction; existing extraction files are protected.
+
+For example, later construct windows using the existing helper:
+
+```python
+import json
+from pathlib import Path
+import numpy as np
+from src.dataset import create_sliding_windows_for_video, UTARLDDDataset
+
+root = Path("output/extracted_features/uta_rldd_raw")
+x = np.load(root / "x.npy", mmap_mode="r", allow_pickle=False)
+manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+parts = [create_sliding_windows_for_video(
+    x[v["start"]:v["stop"]], v["label"], v["subject_id"], v["fold_id"],
+    seq_length=60, step_size=15,
+) for v in manifest["videos"]]
+X, y, subjects, folds = [np.concatenate(items) for items in zip(*parts)]
+dataset = UTARLDDDataset(X=X, y=y, subjects=subjects, folds=folds)
+dataset.validate()
+dataset.save_npz(root.parent / "uta_rldd_seq60_step15.npz")
+```
+
+The current training CLI expects a windowed NPZ, so use the converted archive
+with `train.py`. Alternatively, the original combined extraction-and-windowing
+workflow remains available:
+
 Extract EAR, MAR, and Head Pose angles from raw videos:
 ```bash
 python extract_features.py \
